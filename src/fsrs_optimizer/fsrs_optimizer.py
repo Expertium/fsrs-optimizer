@@ -65,6 +65,7 @@ DEFAULT_PARAMETER = [
     1.587,
     0.2272,
     2.8755,
+    -0.5,
 ]
 
 S_MIN = 0.01
@@ -116,7 +117,7 @@ class FSRS(nn.Module):
             new_d = self.w[4] - self.w[5] * (X[:, 1] - 3)
             new_d = new_d.clamp(1, 10)
         else:
-            r = power_forgetting_curve(X[:, 0], state[:, 0])
+            r = self.power_forgetting_curve(X[:, 0], state[:, 0])
             condition = X[:, 1] > 1
             new_s = torch.where(
                 condition,
@@ -143,7 +144,10 @@ class FSRS(nn.Module):
 
     def mean_reversion(self, init: Tensor, current: Tensor) -> Tensor:
         return self.w[7] * init + (1 - self.w[7]) * current
-
+    
+    def power_forgetting_curve(self, delta_t, stability):
+        FACTOR = 0.9 ** (1 / self.w[17]) - 1
+        return (1 + FACTOR * delta_t / stability) ** self.w[17]
 
 class ParameterClipper:
     def __init__(self, frequency: int = 1):
@@ -165,6 +169,7 @@ class ParameterClipper:
             w[14] = w[14].clamp(0.01, 3)
             w[15] = w[15].clamp(0, 1)
             w[16] = w[16].clamp(1, 6)
+            w[17] = w[17].clamp(-1, -0.1)
             module.w.data = w
 
 
@@ -305,11 +310,9 @@ class Trainer:
                 real_batch_size = seq_lens.shape[0]
                 outputs, _ = self.model(sequences)
                 stabilities = outputs[seq_lens - 1, torch.arange(real_batch_size), 0]
-                retentions = power_forgetting_curve(delta_ts, stabilities)
+                retentions = self.model.power_forgetting_curve(delta_ts, stabilities)
                 loss = self.loss_fn(retentions, labels).sum()
                 loss.backward()
-                for param in self.model.parameters():
-                    param.grad[:4] = torch.zeros(4)
                 self.optimizer.step()
                 self.scheduler.step()
                 self.model.apply(self.clipper)
@@ -350,7 +353,7 @@ class Trainer:
                 real_batch_size = seq_lens.shape[0]
                 outputs, _ = self.model(sequences.transpose(0, 1))
                 stabilities = outputs[seq_lens - 1, torch.arange(real_batch_size), 0]
-                retentions = power_forgetting_curve(delta_ts, stabilities)
+                retentions = self.model.power_forgetting_curve(delta_ts, stabilities)
                 loss = self.loss_fn(retentions, labels).mean()
                 losses.append(loss)
             self.avg_train_losses.append(losses[0])
@@ -1326,9 +1329,10 @@ class Optimizer:
         stabilities, difficulties = my_collection.batch_predict(self.dataset)
         self.dataset["stability"] = stabilities
         self.dataset["difficulty"] = difficulties
-        self.dataset["p"] = power_forgetting_curve(
-            self.dataset["delta_t"], self.dataset["stability"]
-        )
+        with torch.no_grad():
+            self.dataset["p"] = my_collection.model.power_forgetting_curve(
+                self.dataset["delta_t"].values, self.dataset["stability"].values
+            ).detach().numpy()
         self.dataset["log_loss"] = self.dataset.apply(
             lambda row: -np.log(row["p"]) if row["y"] == 1 else -np.log(1 - row["p"]),
             axis=1,
@@ -1339,9 +1343,10 @@ class Optimizer:
         stabilities, difficulties = my_collection.batch_predict(self.dataset)
         self.dataset["stability"] = stabilities
         self.dataset["difficulty"] = difficulties
-        self.dataset["p"] = power_forgetting_curve(
-            self.dataset["delta_t"], self.dataset["stability"]
-        )
+        with torch.no_grad():
+            self.dataset["p"] = my_collection.model.power_forgetting_curve(
+                self.dataset["delta_t"].values, self.dataset["stability"].values
+            ).detach().numpy()
         self.dataset["log_loss"] = self.dataset.apply(
             lambda row: -np.log(row["p"]) if row["y"] == 1 else -np.log(1 - row["p"]),
             axis=1,
@@ -1466,9 +1471,10 @@ class Optimizer:
         analysis_df["last_delta_t"] = analysis_df["t_history"].map(
             lambda x: int(x.split(",")[-1])
         )
-        analysis_df["last_r"] = power_forgetting_curve(
-            analysis_df["delta_t"], analysis_df["last_s"]
-        )
+        with torch.no_grad():
+            analysis_df["last_r"] = my_collection.model.power_forgetting_curve(
+                analysis_df["delta_t"].values, analysis_df["last_s"].values
+            ).detach().numpy()
         analysis_df["last_s_bin"] = analysis_df["last_s"].map(
             lambda x: math.pow(1.2, math.floor(math.log(x, 1.2)))
         )
