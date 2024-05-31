@@ -170,7 +170,7 @@ class ParameterClipper:
             w[14] = w[14].clamp(0.01, 3)
             w[15] = w[15].clamp(0, 1)
             w[16] = w[16].clamp(1, 6)
-            w[17] = w[17].clamp(-1.5, -0.33)
+            w[17] = w[17].clamp(-1, -0.1)
             module.w.data = w
 
 
